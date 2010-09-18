@@ -25,6 +25,12 @@
 #include <plat/s3c64xx-dvfs.h>
 #endif
 
+//#define QT5480_SPARE_EEPROM /* Never write eeprom, to prevent wear */
+//#define QT5480_DEBUG /* Print debug messages */
+
+
+
+#ifndef QT5480_SPARE_EEPROM
 // firmware data : version 5.5
 static u8 firmware_data[] =
 {
@@ -1279,6 +1285,7 @@ static u8 firmware_data[] =
     0xDE,0x6F,0x6F,0x37,0x37,0x9B,0x9B,0xCD,0xCD,0x66,0x5E,0x00,0xC7,0x1C,0x00,0x0D,0x3A,0xED,0xFE,0xCD,
     0x93,0xCA,0xB0,0x72,0x5E,0x1E,0x00,0xD1,0x09,0x00,0x00
 };
+#endif
 
 #define DBG_SAMSUNG 0x01
 #define DBG_DEV     0x02
@@ -1287,7 +1294,6 @@ static u8 firmware_data[] =
 
 // print message
 #define PRINT_MSG(p, x...)      { printk("[QT5480]:[%s] ", __func__); printk(p, ## x); }
-//#define QT5480_DEBUG
 #ifdef QT5480_DEBUG
     #define DEBUG_MSG(p, x...)          printk("[QT5480]:[%s] ", __func__); printk(p, ## x);
     #define DBG_I2C_MSG(p,x...)         printk("[QT5480]:DBG_I2C:[%s] ", __func__); printk(p, ## x);
@@ -1575,7 +1581,7 @@ static u8 g_qt5480_setup[] = {
 #endif
 };
 
-
+#ifndef QT5480_SPARE_EEPROM
 static u16 g_CRC_poly = 0x8005;
 
 //
@@ -1615,6 +1621,7 @@ static u16 Calculate_Config_Checksum(void)
     LEAVE_FUNC;
     return (CRC_val);
     }
+#endif
 
 //
 // qt5480_i2c_write
@@ -1703,6 +1710,7 @@ static int qt5480_check_chip_id(int aId)
     return -1;
     }
 
+#ifndef QT5480_SPARE_EEPROM
 //
 // qt5480_verify_checksum
 //
@@ -1741,6 +1749,7 @@ static int qt5480_verify_checksum(void)
     LEAVE_FUNC;
     return -1;
     }
+#endif
 
 //
 // qt5480_write_setup_code
@@ -1763,10 +1772,11 @@ static int qt5480_write_setup_code(void)
         DEBUG_MSG("reg_addr: %4d = g_qt5480_setup[%04d] : 0x%02x\n", reg_addr, i, g_qt5480_setup[i]);
         }
 
+#ifndef QT5480_SPARE_EEPROM
     ret = qt5480_i2c_write(REG_BACKUP_REQUEST, 0x55);
     DO_AND_RETURN_VALUE_IF_TRUE(ret < 0, PRINT_MSG("backup write failed.\n"), -1);
-
     DEBUG_MSG("backup write success.\n");
+#endif
     return 0;
     }
 
@@ -2033,6 +2043,7 @@ static irqreturn_t qt5480_irq_handler(int irq, void *dev_id)
     return IRQ_HANDLED;
     }
 
+#ifndef QT5480_SPARE_EEPROM
 //
 // qt5480_read_status
 //
@@ -2255,6 +2266,7 @@ static int qt5480_check_code_version_update_firmware(void)
 
     return 0;
     }
+#endif
 
 //
 // qt5480_probe
@@ -2284,7 +2296,7 @@ static int qt5480_probe(struct platform_device *aDevice)
         {
         goto err_chip_id_check_failed;
         }
-
+#ifndef QT5480_SPARE_EEPROM
     // check firmware version
     // comment out temporarily
     if(qt5480_check_code_version_update_firmware())
@@ -2296,7 +2308,9 @@ static int qt5480_probe(struct platform_device *aDevice)
         }
 
     DO_IF_TRUE((qt5480_verify_checksum() < 0) && (qt5480_write_setup_code() < 0), PRINT_MSG("write setup code failed...\n"));
-
+#else
+    DO_IF_TRUE((qt5480_write_setup_code() < 0), PRINT_MSG("write setup code failed...\n"));
+#endif
     //CAL
     ret = qt5480_i2c_write(REG_CALIBRATE, 0x55);
     DO_IF_TRUE(ret < 0, PRINT_MSG("calibrate write failed\n"));
@@ -2609,7 +2623,7 @@ static void init_hw_setting(void)
 //
 // i2c_show
 //
-static ssize_t i2c_show(struct device *aDevice, struct device_attribute *aAttribute, s8 *aBuf)
+static ssize_t i2c_show(struct device *aDevice, struct device_attribute *aAttribute, char *aBuf)
     {
     int ret;
     u8 read_buf[5];
@@ -2635,7 +2649,7 @@ static ssize_t i2c_store(
     }
 
 // print the current value of GPIO
-static ssize_t gpio_show(struct device *aDevice, struct device_attribute *aAttribute, s8 *aBuf)
+static ssize_t gpio_show(struct device *aDevice, struct device_attribute *aAttribute, char *aBuf)
     {
     PRINT_MSG("GPIO Status\n");
     printk("TOUCH_EN  : %s\n", gpio_get_value(GPIO_TOUCH_EN)? "High":"Low");
@@ -2686,7 +2700,7 @@ static ssize_t gpio_store(
     }
 
 // print QT setup status
-static ssize_t setup_show(struct device *aDevice, struct device_attribute *aAttribute, s8 *aBuf)
+static ssize_t setup_show(struct device *aDevice, struct device_attribute *aAttribute, char *aBuf)
     {
     int i;
     PRINT_MSG("Setup Status\n");
@@ -2741,7 +2755,7 @@ static ssize_t setup_store(struct device *aDevice, struct device_attribute *aAtt
     return aSize;
     }
 
-static ssize_t debug_flag_show(struct device *aDevice, struct device_attribute *aAttribute, s8 *aBuf)
+static ssize_t debug_flag_show(struct device *aDevice, struct device_attribute *aAttribute, char *aBuf)
     {
     PRINT_MSG("debug_flag_show %d\n", show_debug_message);
     return show_debug_message;
