@@ -1568,7 +1568,7 @@ static u8 g_qt5480_setup[] = {
  64,  64,  64,  64,
  64,  64,  64,  64,
  64,  64,  64,  64,
-  2,   14,   8,   3,
+  2,  14,   8,   3,
   0,   0,   3,   0,
   0,   0,  25,   0,
   0,  26,   0,   6,
@@ -1780,10 +1780,6 @@ static int qt5480_write_setup_code(void)
     return 0;
     }
 
-
-#define STATE_RELEASED 0
-#define STATE_ENTER    1
-#define STATE_CONTACT  2
 #define SINGLETOUCH_FLAG 0x01
 #define MULTITOUCH_FLAG  0x02
 
@@ -1791,15 +1787,17 @@ static int qt5480_write_setup_code(void)
 
 typedef struct report_t
 {
-  int contact; //finger on screen
-  int pos_x;   //x coordinate
-  int pos_y;   //y coordinate
+  int contact;  //finger on screen
+  int pos_x;    //x coordinate
+  int pos_y;    //y coordinate
+  int pressure; //pressure
+  int width;    //touch width
 } report_t;
 
 typedef struct touch_t
 {
   int ready;         //new data ready
-  report_t curr_pos;  //current status (to be reported)
+  report_t curr_pos; //current status (to be reported)
   report_t prev_pos; //last reported status
 } touch_t;
 
@@ -1862,15 +1860,19 @@ static void qt5480_handle_data(touch_t* touch, u8* buf)
     break;
     case 4:
       if(ignore) break;
-      touch[0].curr_pos.pos_y = ((buf[1] * 4 + buf[2] / 64) * 480 ) / 1024;
-      touch[0].curr_pos.pos_x = ((buf[3] * 4 + buf[4] / 64) * 320 ) / 1024;
+      touch[0].curr_pos.pos_y    = ((buf[1] * 4 + buf[2] / 64) * 480 ) / 1024;
+      touch[0].curr_pos.pos_x    = ((buf[3] * 4 + buf[4] / 64) * 320 ) / 1024;
+      touch[0].curr_pos.width    = (buf[2] % 64);
+      touch[0].curr_pos.pressure = (buf[4] % 64);
       touch[0].ready = 1;
       if(!touch[1].curr_pos.contact) touch[1].ready = 1;
     break;
     case 5:
       if(ignore) break;
-      touch[1].curr_pos.pos_y = ((buf[1] * 4 + buf[2] / 64) * 480 ) / 1024;
-      touch[1].curr_pos.pos_x = ((buf[3] * 4 + buf[4] / 64) * 320 ) / 1024;
+      touch[1].curr_pos.pos_y    = ((buf[1] * 4 + buf[2] / 64) * 480 ) / 1024;
+      touch[1].curr_pos.pos_x    = ((buf[3] * 4 + buf[4] / 64) * 320 ) / 1024;
+      touch[1].curr_pos.width    = (buf[2] % 64);
+      touch[1].curr_pos.pressure = (buf[4] % 64);
       touch[1].ready = 1;
       if(!touch[0].curr_pos.contact) touch[0].ready = 1;
     break;
@@ -1907,11 +1909,15 @@ static void qt5480_report_input(touch_t* touch, struct input_dev* dev)
   {
     changed |= (touch[0].curr_pos.pos_x == touch[0].prev_pos.pos_x)?0:1;
     changed |= (touch[0].curr_pos.pos_y == touch[0].prev_pos.pos_y)?0:1;
+    changed |= (touch[0].curr_pos.width == touch[0].prev_pos.width)?0:1;
+    changed |= (touch[0].curr_pos.pressure == touch[0].prev_pos.pressure)?0:1;
   }
   if(touch[1].curr_pos.contact)
   {
     changed |= (touch[1].curr_pos.pos_x == touch[1].prev_pos.pos_x)?0:1;
     changed |= (touch[1].curr_pos.pos_y == touch[1].prev_pos.pos_y)?0:1;
+    changed |= (touch[1].curr_pos.width == touch[1].prev_pos.width)?0:1;
+    changed |= (touch[1].curr_pos.pressure == touch[1].prev_pos.pressure)?0:1;
   }
   if(!changed) return;
 
@@ -1931,13 +1937,15 @@ static void qt5480_report_input(touch_t* touch, struct input_dev* dev)
       input_report_abs(dev, ABS_MT_TOUCH_MAJOR, 0);
       input_report_abs(dev, ABS_MT_POSITION_X, touch[0].curr_pos.pos_x);
       input_report_abs(dev, ABS_MT_POSITION_Y, touch[0].curr_pos.pos_y);
-      DBG_DEV_MSG("TOUCH:%d @%d:%d\n", 0, touch[0].curr_pos.pos_x, touch[0].curr_pos.pos_y);
+      //input_report_abs(dev, ABS_MT_WIDTH_MAJOR, touch[0].curr_pos.width);
+      DBG_DEV_MSG("TOUCH:%d @%d:%d (w=%d,p=%d)\n", 0, touch[0].curr_pos.pos_x, touch[0].curr_pos.pos_y, touch[0].curr_pos.width, touch[0].curr_pos.pressure);
       input_mt_sync(dev);
       DBG_DEV_MSG("MT_SYNC\n");
       input_report_abs(dev, ABS_MT_TOUCH_MAJOR, 0);
       input_report_abs(dev, ABS_MT_POSITION_X, touch[1].curr_pos.pos_x);
       input_report_abs(dev, ABS_MT_POSITION_Y, touch[1].curr_pos.pos_y);
-      DBG_DEV_MSG("TOUCH:%d @%d:%d\n", 0, touch[1].curr_pos.pos_x, touch[1].curr_pos.pos_y);
+      //input_report_abs(dev, ABS_MT_WIDTH_MAJOR, touch[1].curr_pos.width);
+      DBG_DEV_MSG("TOUCH:%d @%d:%d (w=%d,p=%d)\n", 0, touch[1].curr_pos.pos_x, touch[1].curr_pos.pos_y, touch[1].curr_pos.width, touch[1].curr_pos.pressure);
       input_mt_sync(dev);
       DBG_DEV_MSG("MT_SYNC\n");
       input_sync(dev);
@@ -1950,32 +1958,14 @@ static void qt5480_report_input(touch_t* touch, struct input_dev* dev)
   if(touch[1].curr_pos.contact && !touch[0].curr_pos.contact) first_to_enter = 1;
 #endif
 
-  /*
-    If one contact enters while the other one leaves, first report releasing the first contact.
-    Otherwise it may register as a swipe...
-  */
-  if( (!touch[0].curr_pos.contact && touch[0].prev_pos.contact && touch[1].curr_pos.contact && !touch[1].prev_pos.contact) ||
-      (touch[0].curr_pos.contact && !touch[0].prev_pos.contact && !touch[1].curr_pos.contact && touch[1].prev_pos.contact))
-  {
-      input_report_abs(dev, ABS_MT_TOUCH_MAJOR, 0);
-      input_report_abs(dev, ABS_MT_POSITION_X, touch[1].curr_pos.pos_x);
-      input_report_abs(dev, ABS_MT_POSITION_Y, touch[1].curr_pos.pos_y);
-      DBG_DEV_MSG("TOUCH:%d @%d:%d\n", 0, touch[1].curr_pos.pos_x, touch[1].curr_pos.pos_y);
-      input_mt_sync(dev);
-      DBG_DEV_MSG("MT_SYNC\n");
-      input_sync(dev);
-      DBG_DEV_MSG("SYNC\n");
-      touch[0].prev_pos.contact = 0;
-      touch[1].prev_pos.contact = 0;
-  }
-
   /* report touch[0] only on contact or on leaving */
   if(touch[0].curr_pos.contact || touch[0].prev_pos.contact)
   {
-    input_report_abs(dev, ABS_MT_TOUCH_MAJOR, touch[0].curr_pos.contact);
+    input_report_abs(dev, ABS_MT_TOUCH_MAJOR, touch[0].curr_pos.contact?touch[0].curr_pos.width:0);
     input_report_abs(dev, ABS_MT_POSITION_X, touch[0].curr_pos.pos_x);
     input_report_abs(dev, ABS_MT_POSITION_Y, touch[0].curr_pos.pos_y);
-    DBG_DEV_MSG("TOUCH:%d @%d:%d\n", touch[0].curr_pos.contact, touch[0].curr_pos.pos_x, touch[0].curr_pos.pos_y);
+    //input_report_abs(dev, ABS_MT_WIDTH_MAJOR, touch[0].curr_pos.width);
+    DBG_DEV_MSG("TOUCH:%d @%d:%d (w=%d,p=%d)\n", touch[0].curr_pos.contact, touch[0].curr_pos.pos_x, touch[0].curr_pos.pos_y, touch[0].curr_pos.width, touch[0].curr_pos.pressure);
     input_mt_sync(dev);
     DBG_DEV_MSG("MT_SYNC\n");
   }
@@ -1983,10 +1973,11 @@ static void qt5480_report_input(touch_t* touch, struct input_dev* dev)
   /* report touch[1] only on contact or on leaving */
   if(touch[1].curr_pos.contact || touch[1].prev_pos.contact)
   {
-    input_report_abs(dev, ABS_MT_TOUCH_MAJOR, touch[1].curr_pos.contact);
+    input_report_abs(dev, ABS_MT_TOUCH_MAJOR, touch[1].curr_pos.contact?touch[1].curr_pos.width:0);
     input_report_abs(dev, ABS_MT_POSITION_X, touch[1].curr_pos.pos_x);
     input_report_abs(dev, ABS_MT_POSITION_Y, touch[1].curr_pos.pos_y);
-    DBG_DEV_MSG("TOUCH:%d @%d:%d\n", touch[1].curr_pos.contact, touch[1].curr_pos.pos_x, touch[1].curr_pos.pos_y);
+    //input_report_abs(dev, ABS_MT_WIDTH_MAJOR, touch[1].curr_pos.width);
+    DBG_DEV_MSG("TOUCH:%d @%d:%d (w=%d,p=%d)\n", touch[1].curr_pos.contact, touch[1].curr_pos.pos_x, touch[1].curr_pos.pos_y, touch[1].curr_pos.width, touch[1].curr_pos.pressure);
     input_mt_sync(dev);
     DBG_DEV_MSG("MT_SYNC\n");
   }
@@ -2007,8 +1998,8 @@ static void qt5480_work_func(struct work_struct *aWork)
 {
     static touch_t touch[] =
     {
-      {0,{0,0,0},{0,0,0}},
-      {0,{0,0,0},{0,0,0}},
+      {0,{0,0,0,0,0},{0,0,0,0,0}},
+      {0,{0,0,0,0,0},{0,0,0,0,0}},
     };
 
     u8 read_buf[5];
@@ -2024,7 +2015,12 @@ static void qt5480_work_func(struct work_struct *aWork)
     }
 
     /* handle received data */
-    DBG_I2C_MSG("Read data [%02x] %02x %02x %02x %02x\n", read_buf[0], read_buf[1], read_buf[2], read_buf[3], read_buf[4]);
+    if(read_buf[0] == 4 || read_buf[0] == 5)
+    {
+      DBG_I2C_MSG("Read data [%02x] y=%d w=%d x=%d p=%d\n", read_buf[0], read_buf[1]*4+read_buf[2]/64, read_buf[2]%64, read_buf[3]*4+read_buf[4]/64, read_buf[4]%64);
+    }else{
+      DBG_I2C_MSG("Read data [%02x] %02x %02x %02x %02x\n", read_buf[0], read_buf[1], read_buf[2], read_buf[3], read_buf[4]);
+    }
     qt5480_handle_data(touch, read_buf);
 
     /* handle input device */
@@ -2324,21 +2320,15 @@ static int qt5480_probe(struct platform_device *aDevice)
         }
 
     g_qt5480_ts_driver->input_dev->name = "qt5480_ts_input";
-    set_bit(EV_SYN, g_qt5480_ts_driver->input_dev->evbit);
-    set_bit(EV_KEY, g_qt5480_ts_driver->input_dev->evbit);
-    set_bit(BTN_TOUCH, g_qt5480_ts_driver->input_dev->keybit);
-    set_bit(EV_ABS, g_qt5480_ts_driver->input_dev->evbit);
 
-    input_set_abs_params(g_qt5480_ts_driver->input_dev, ABS_X, 0, 320, 0, 0);
-    input_set_abs_params(g_qt5480_ts_driver->input_dev, ABS_Y, 0, 480, 0, 0);
-    input_set_abs_params(g_qt5480_ts_driver->input_dev, ABS_PRESSURE, 0, 255, 0, 0);
-    input_set_abs_params(g_qt5480_ts_driver->input_dev, ABS_TOOL_WIDTH, 0, 15, 0, 0);
 
     /* multitouch input device parameters */
+    set_bit(EV_SYN, g_qt5480_ts_driver->input_dev->evbit);
+    set_bit(EV_ABS, g_qt5480_ts_driver->input_dev->evbit);
     input_set_abs_params(g_qt5480_ts_driver->input_dev, ABS_MT_POSITION_X, 0, 320, 0, 0);
     input_set_abs_params(g_qt5480_ts_driver->input_dev, ABS_MT_POSITION_Y, 0, 480, 0, 0);
-    input_set_abs_params(g_qt5480_ts_driver->input_dev, ABS_MT_TOUCH_MAJOR, 0, 255, 0, 0);
-    input_set_abs_params(g_qt5480_ts_driver->input_dev, ABS_MT_WIDTH_MAJOR, 0, 15, 0, 0);
+    input_set_abs_params(g_qt5480_ts_driver->input_dev, ABS_MT_TOUCH_MAJOR, 0, 64, 0, 0);
+    //input_set_abs_params(g_qt5480_ts_driver->input_dev, ABS_MT_WIDTH_MAJOR, 0, 15, 0, 0);
 
 
 
@@ -2507,6 +2497,10 @@ static int qt5480_resume(void)
 
     ret = qt5480_i2c_write(REG_STATUS_MASK, g_qt5480_setup[REG_STATUS_MASK - 512]); // Status Mask
     DO_IF_TRUE(ret < 0, PRINT_MSG(" write Status Mask Register failed(%d)!\n", ret));
+
+#ifdef QT5480_SPARE_EEPROM
+    DO_IF_TRUE((qt5480_write_setup_code() < 0), PRINT_MSG("write setup code failed...\n"));
+#endif
 
     ret = qt5480_i2c_write(REG_CALIBRATE, 0x55);
     DO_IF_TRUE(ret < 0, PRINT_MSG("calibrate write failed(%d)!\n", ret));
@@ -2756,10 +2750,10 @@ static ssize_t setup_store(struct device *aDevice, struct device_attribute *aAtt
     }
 
 static ssize_t debug_flag_show(struct device *aDevice, struct device_attribute *aAttribute, char *aBuf)
-    {
+{
     PRINT_MSG("debug_flag_show %d\n", show_debug_message);
-    return show_debug_message;
-    }
+    return sprintf(aBuf, "%d\n", show_debug_message);
+}
 
 static ssize_t debug_flag_store(struct device *aDevice, struct device_attribute *aAttribute, const char *aBuf, size_t aSize)
 {
@@ -2774,7 +2768,7 @@ static ssize_t debug_flag_store(struct device *aDevice, struct device_attribute 
 
     show_debug_message = value;
 
-    return index;
+    return aSize;
 }
 
 // Declaration for the attribute of GPIO/I2C
@@ -2792,7 +2786,7 @@ int __init qt5480_init(void)
 
     ENTER_FUNC;
 
-    printk("GT-i5700 (Atmel AT42QT5480) touchscreen driver v2.01b\n");
+    printk("GT-i5700 (Atmel AT42QT5480) touchscreen driver\n");
     printk(" (C) 2009 Samsung Electronics Co. Ltd.\n");
     printk(" (C) 2010 Lambertus Gorter (multitouch)\n");
 
