@@ -1329,6 +1329,7 @@ struct ts_driver
     struct i2c_client       *client;
     struct input_dev        *input_dev;
     struct work_struct      work;
+    struct delayed_work     charger;
     struct early_suspend    early_suspend;
     } __attribute__ ((packed));
 
@@ -1569,7 +1570,7 @@ static u8 g_qt5480_setup[] = {
  64,  64,  64,  64,
  64,  64,  64,  64,
   2,  14,   8,   3,
-  0,   0,   3,   0,
+  0,   0,   1,   0,
   0,   0,  25,   0,
   0,  26,   0,   6,
  16,   6,  16,  16,
@@ -1847,8 +1848,16 @@ static void qt5480_handle_data(touch_t* touch, u8* buf)
       {
         touch[0].curr_pos.contact = (buf[4]&0x01)?1:0;
         touch[1].curr_pos.contact = (buf[4]&0x02)?1:0;
-        touch[0].ready = 1;
-        touch[1].ready = 1;
+        if(touch[0].curr_pos.contact == 0)
+        {
+          touch[0].ready = 1;
+          if(touch[1].prev_pos.contact) touch[1].ready = 1;
+        }
+        if(touch[1].curr_pos.contact == 0)
+        {
+          touch[1].ready = 1;
+          if(touch[0].prev_pos.contact) touch[0].ready = 1;
+        }
       }
 
       /* Error bit */
@@ -1856,6 +1865,8 @@ static void qt5480_handle_data(touch_t* touch, u8* buf)
       {
          touch[0].curr_pos.contact = 0;
          touch[1].curr_pos.contact = 0;
+         touch[0].ready = 1;
+         touch[1].ready = 1;
       }
     break;
     case 4:
@@ -1886,16 +1897,13 @@ static void qt5480_handle_data(touch_t* touch, u8* buf)
 }
 
 
-#define ECLAIR_SWIPE_BUG
 //
 // qt5480_report_input
 // write to input device
 //
 static void qt5480_report_input(touch_t* touch, struct input_dev* dev)
 {
-#ifdef ECLAIR_SWIPE_BUG
   static int first_to_enter = 0;
-#endif
   int changed = 0;
 
 
@@ -1921,42 +1929,20 @@ static void qt5480_report_input(touch_t* touch, struct input_dev* dev)
   }
   if(!changed) return;
 
-
-
-#ifdef ECLAIR_SWIPE_BUG
-  /*
-     If two fingers were on the screen and the one that arrived first is lifted
-     then report both fingers before continuing.
-     (Otherwise Android 2.1 will report the second finger lifted and the first
-     finger moving to the position of the second finger)
-  */
-  if(touch[0].prev_pos.contact && touch[1].prev_pos.contact)
+  if(first_to_enter == 0) /* report the last contact first */
   {
-    if(!touch[first_to_enter].curr_pos.contact)
+    /* report touch[1] only on contact or on leaving */
+    if(touch[1].curr_pos.contact || touch[1].prev_pos.contact)
     {
-      input_report_abs(dev, ABS_MT_TOUCH_MAJOR, 0);
-      input_report_abs(dev, ABS_MT_POSITION_X, touch[0].curr_pos.pos_x);
-      input_report_abs(dev, ABS_MT_POSITION_Y, touch[0].curr_pos.pos_y);
-      //input_report_abs(dev, ABS_MT_WIDTH_MAJOR, touch[0].curr_pos.width);
-      DBG_DEV_MSG("TOUCH:%d @%d:%d (w=%d,p=%d)\n", 0, touch[0].curr_pos.pos_x, touch[0].curr_pos.pos_y, touch[0].curr_pos.width, touch[0].curr_pos.pressure);
-      input_mt_sync(dev);
-      DBG_DEV_MSG("MT_SYNC\n");
-      input_report_abs(dev, ABS_MT_TOUCH_MAJOR, 0);
+      input_report_abs(dev, ABS_MT_TOUCH_MAJOR, touch[1].curr_pos.contact?touch[1].curr_pos.width:0);
       input_report_abs(dev, ABS_MT_POSITION_X, touch[1].curr_pos.pos_x);
       input_report_abs(dev, ABS_MT_POSITION_Y, touch[1].curr_pos.pos_y);
       //input_report_abs(dev, ABS_MT_WIDTH_MAJOR, touch[1].curr_pos.width);
-      DBG_DEV_MSG("TOUCH:%d @%d:%d (w=%d,p=%d)\n", 0, touch[1].curr_pos.pos_x, touch[1].curr_pos.pos_y, touch[1].curr_pos.width, touch[1].curr_pos.pressure);
+      DBG_DEV_MSG("TOUCH_1:%d @%d:%d (w=%d,p=%d)\n", touch[1].curr_pos.contact, touch[1].curr_pos.pos_x, touch[1].curr_pos.pos_y, touch[1].curr_pos.width, touch[1].curr_pos.pressure);
       input_mt_sync(dev);
       DBG_DEV_MSG("MT_SYNC\n");
-      input_sync(dev);
-      DBG_DEV_MSG("SYNC\n");
-      touch[0].prev_pos.contact = 0;
-      touch[1].prev_pos.contact = 0;
     }
   }
-  if(touch[0].curr_pos.contact && !touch[1].curr_pos.contact) first_to_enter = 0;
-  if(touch[1].curr_pos.contact && !touch[0].curr_pos.contact) first_to_enter = 1;
-#endif
 
   /* report touch[0] only on contact or on leaving */
   if(touch[0].curr_pos.contact || touch[0].prev_pos.contact)
@@ -1965,24 +1951,32 @@ static void qt5480_report_input(touch_t* touch, struct input_dev* dev)
     input_report_abs(dev, ABS_MT_POSITION_X, touch[0].curr_pos.pos_x);
     input_report_abs(dev, ABS_MT_POSITION_Y, touch[0].curr_pos.pos_y);
     //input_report_abs(dev, ABS_MT_WIDTH_MAJOR, touch[0].curr_pos.width);
-    DBG_DEV_MSG("TOUCH:%d @%d:%d (w=%d,p=%d)\n", touch[0].curr_pos.contact, touch[0].curr_pos.pos_x, touch[0].curr_pos.pos_y, touch[0].curr_pos.width, touch[0].curr_pos.pressure);
+    DBG_DEV_MSG("TOUCH_0:%d @%d:%d (w=%d,p=%d)\n", touch[0].curr_pos.contact, touch[0].curr_pos.pos_x, touch[0].curr_pos.pos_y, touch[0].curr_pos.width, touch[0].curr_pos.pressure);
     input_mt_sync(dev);
     DBG_DEV_MSG("MT_SYNC\n");
   }
 
-  /* report touch[1] only on contact or on leaving */
-  if(touch[1].curr_pos.contact || touch[1].prev_pos.contact)
+  if(first_to_enter == 1) /* report the first contact last */
   {
-    input_report_abs(dev, ABS_MT_TOUCH_MAJOR, touch[1].curr_pos.contact?touch[1].curr_pos.width:0);
-    input_report_abs(dev, ABS_MT_POSITION_X, touch[1].curr_pos.pos_x);
-    input_report_abs(dev, ABS_MT_POSITION_Y, touch[1].curr_pos.pos_y);
-    //input_report_abs(dev, ABS_MT_WIDTH_MAJOR, touch[1].curr_pos.width);
-    DBG_DEV_MSG("TOUCH:%d @%d:%d (w=%d,p=%d)\n", touch[1].curr_pos.contact, touch[1].curr_pos.pos_x, touch[1].curr_pos.pos_y, touch[1].curr_pos.width, touch[1].curr_pos.pressure);
-    input_mt_sync(dev);
-    DBG_DEV_MSG("MT_SYNC\n");
+    /* report touch[1] only on contact or on leaving */
+    if(touch[1].curr_pos.contact || touch[1].prev_pos.contact)
+    {
+      input_report_abs(dev, ABS_MT_TOUCH_MAJOR, touch[1].curr_pos.contact?touch[1].curr_pos.width:0);
+      input_report_abs(dev, ABS_MT_POSITION_X, touch[1].curr_pos.pos_x);
+      input_report_abs(dev, ABS_MT_POSITION_Y, touch[1].curr_pos.pos_y);
+      //input_report_abs(dev, ABS_MT_WIDTH_MAJOR, touch[1].curr_pos.width);
+      DBG_DEV_MSG("TOUCH_1:%d @%d:%d (w=%d,p=%d)\n", touch[1].curr_pos.contact, touch[1].curr_pos.pos_x, touch[1].curr_pos.pos_y, touch[1].curr_pos.width, touch[1].curr_pos.pressure);
+      input_mt_sync(dev);
+      DBG_DEV_MSG("MT_SYNC\n");
+    }
   }
   input_sync(dev);
   DBG_DEV_MSG("SYNC\n");
+  DBG_DEV_MSG("\n");
+
+  if(!touch[0].curr_pos.contact && !touch[1].curr_pos.contact) first_to_enter = 0;
+  if(touch[0].curr_pos.contact && !touch[1].curr_pos.contact) first_to_enter = 0;
+  if(touch[1].curr_pos.contact && !touch[0].curr_pos.contact) first_to_enter = 1;
 
   touch[0].ready = 0;
   touch[1].ready = 0;
@@ -2025,6 +2019,34 @@ static void qt5480_work_func(struct work_struct *aWork)
 
     /* handle input device */
     qt5480_report_input(touch, g_qt5480_ts_driver->input_dev);
+}
+
+// change the configuration whil charging to prevent jittering
+//
+static void qt5480_charger_workaround(struct work_struct *aWork)
+{
+  static int previous = -1;
+  int charging;
+  int ret;
+
+  charging = gpio_get_value(GPIO_TA_CHG_N)?0:1;
+
+  if(charging == 1 && previous != charging)
+  {
+    ret = qt5480_i2c_write(REG_MEDIAN_FILTER_LENGTH, 3);
+    DO_IF_TRUE(ret < 0, PRINT_MSG("write Median Filter Length Register failed(%d)!\n", ret));
+    PRINT_MSG("Charger connected, changing MEDIAN_FILTER_LENGTH\n");
+  }
+
+  if(charging == 0 && previous != charging)
+  {
+    ret = qt5480_i2c_write(REG_MEDIAN_FILTER_LENGTH, g_qt5480_setup[REG_MEDIAN_FILTER_LENGTH - 512]);
+    DO_IF_TRUE(ret < 0, PRINT_MSG("write LP Mode Register failed(%d)!\n", ret));
+    PRINT_MSG("Charger disconnected, reverting MEDIAN_FILTER_LENGTH\n");
+  }
+
+  previous = charging;
+  queue_delayed_work(g_qt5480_work_queue, &g_qt5480_ts_driver->charger, 2*HZ);
 }
 
 //
@@ -2281,6 +2303,7 @@ static int qt5480_probe(struct platform_device *aDevice)
         }
 
     INIT_WORK(&g_qt5480_ts_driver->work, qt5480_work_func);
+    INIT_DELAYED_WORK(&g_qt5480_ts_driver->charger, qt5480_charger_workaround);
 
     do
         {
@@ -2356,6 +2379,8 @@ static int qt5480_probe(struct platform_device *aDevice)
     register_early_suspend(&g_qt5480_ts_driver->early_suspend);
 #endif  // End of CONFIG_HAS_EARLYSUSPEND
 
+    qt5480_charger_workaround(NULL);
+
     return 0;
 
 err_input_register_device_failed:
@@ -2422,6 +2447,7 @@ static int qt5480_suspend(pm_message_t mesg)
 
     ENTER_FUNC;
     disable_irq(g_qt5480_ts_driver->client->irq);
+    cancel_delayed_work(&g_qt5480_ts_driver->charger);
 
     check_touch_int();
 
@@ -2498,10 +2524,6 @@ static int qt5480_resume(void)
     ret = qt5480_i2c_write(REG_STATUS_MASK, g_qt5480_setup[REG_STATUS_MASK - 512]); // Status Mask
     DO_IF_TRUE(ret < 0, PRINT_MSG(" write Status Mask Register failed(%d)!\n", ret));
 
-#ifdef QT5480_SPARE_EEPROM
-    DO_IF_TRUE((qt5480_write_setup_code() < 0), PRINT_MSG("write setup code failed...\n"));
-#endif
-
     ret = qt5480_i2c_write(REG_CALIBRATE, 0x55);
     DO_IF_TRUE(ret < 0, PRINT_MSG("calibrate write failed(%d)!\n", ret));
 
@@ -2510,6 +2532,7 @@ static int qt5480_resume(void)
     check_touch_int();
 
     enable_irq(g_qt5480_ts_driver->client->irq);
+    qt5480_charger_workaround(NULL);
 
     LEAVE_FUNC;
     return 0;
